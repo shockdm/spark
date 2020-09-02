@@ -137,33 +137,25 @@ private[spark] class Client(
       .build()
 
     val driverPodName = resolvedDriverPod.getMetadata.getName
-    logInfo("-------------------------- DEBUG --------------------------------")
     var watch: Watch = null
     val createdDriverPod = kubernetesClient.pods().create(resolvedDriverPod)
-    logInfo("------------------------ DEBUG created pod -----------------------")
     try {
       val otherKubernetesResources = resolvedDriverSpec.driverKubernetesResources ++ Seq(configMap)
       addDriverOwnerReference(createdDriverPod, otherKubernetesResources)
       kubernetesClient.resourceList(otherKubernetesResources: _*).createOrReplace()
-
-      logInfo("---------------- DEBUG created other resources -----------------")
     } catch {
       case NonFatal(e) =>
         kubernetesClient.pods().delete(createdDriverPod)
-        logInfo("---------------- DEBUG failed here -----------------")
         throw e
     }
     val sId = Seq(kubernetesConf.namespace(), driverPodName).mkString(":")
-    logInfo("---------------- DEBUG sId" + sId + " -----------------")
     breakable {
       while (true) {
         try {
-            logInfo("---------------- DEBUG pre-watch here -----------------")
             watch = kubernetesClient
               .pods()
               .withName(driverPodName)
               .watch(watcher)
-              logInfo("---------------- DEBUG pre-watch-stop here -----------------")
             watcher.watchOrStop(sId)
                 break
         } catch {
@@ -244,7 +236,9 @@ private[spark] class KubernetesClientApplication extends SparkApplication {
     val master = KubernetesUtils.parseMasterUrl(sparkConf.get("spark.master"))
     val loggingInterval = if (waitForAppCompletion) Some(sparkConf.get(REPORT_INTERVAL)) else None
 
-    val watcher = new LoggingPodStatusWatcherImpl(kubernetesAppId, loggingInterval)
+    val watcher = new LoggingPodStatusWatcherImpl(kubernetesAppId,
+      loggingInterval,
+      waitForAppCompletion)
 
     Utils.tryWithResource(SparkKubernetesClientFactory.createKubernetesClient(
       master,

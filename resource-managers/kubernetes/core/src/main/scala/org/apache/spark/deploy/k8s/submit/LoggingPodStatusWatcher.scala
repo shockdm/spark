@@ -45,7 +45,8 @@ private[k8s] trait LoggingPodStatusWatcher extends Watcher[Pod] {
  */
 private[k8s] class LoggingPodStatusWatcherImpl(
     appId: String,
-    maybeLoggingInterval: Option[Long])
+    maybeLoggingInterval: Option[Long],
+    waitForCompletion: Boolean)
   extends LoggingPodStatusWatcher with Logging {
 
   private var resourceTooOldReceived: Boolean = false
@@ -189,7 +190,7 @@ private[k8s] class LoggingPodStatusWatcherImpl(
     if (time != null ||  time != "") time else "N/A"
   }
 
-  override def watchOrStop(sId: String): Boolean = if (!hasCompleted()) {
+  override def watchOrStop(sId: String): Boolean = if (waitForCompletion) {
     logInfo(s"Waiting for application ${appId} with submission ID $sId to finish...")
     val interval = maybeLoggingInterval
     synchronized {
