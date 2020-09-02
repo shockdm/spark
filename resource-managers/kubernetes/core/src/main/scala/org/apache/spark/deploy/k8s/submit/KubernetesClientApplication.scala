@@ -17,13 +17,15 @@
 package org.apache.spark.deploy.k8s.submit
 
 import java.io.StringWriter
+import java.net.HttpURLConnection.HTTP_GONE
 import java.util.{Collections, UUID}
 import java.util.Properties
 
 import io.fabric8.kubernetes.api.model._
-import io.fabric8.kubernetes.client.KubernetesClient
+import io.fabric8.kubernetes.client.{KubernetesClient, KubernetesClientException, Watch}
 import scala.collection.mutable
 import scala.util.control.NonFatal
+import util.control.Breaks._
 
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.SparkApplication
@@ -133,29 +135,41 @@ private[spark] class Client(
           .endVolume()
         .endSpec()
       .build()
-    Utils.tryWithResource(
-      kubernetesClient
-        .pods()
-        .withName(resolvedDriverPod.getMetadata.getName)
-        .watch(watcher)) { _ =>
-      val createdDriverPod = kubernetesClient.pods().create(resolvedDriverPod)
-      try {
-        val otherKubernetesResources =
-          resolvedDriverSpec.driverKubernetesResources ++ Seq(configMap)
-        addDriverOwnerReference(createdDriverPod, otherKubernetesResources)
-        kubernetesClient.resourceList(otherKubernetesResources: _*).createOrReplace()
-      } catch {
-        case NonFatal(e) =>
-          kubernetesClient.pods().delete(createdDriverPod)
-          throw e
-      }
 
-      if (waitForAppCompletion) {
-        logInfo(s"Waiting for application $appName to finish...")
-        watcher.awaitCompletion()
-        logInfo(s"Application $appName finished.")
-      } else {
-        logInfo(s"Deployed Spark application $appName into Kubernetes.")
+    val driverPodName = resolvedDriverPod.getMetadata.getName
+    logInfo("-------------------------- DEBUG --------------------------------")
+    var watch: Watch = null
+    val createdDriverPod = kubernetesClient.pods().create(resolvedDriverPod)
+    logInfo("------------------------ DEBUG created pod -----------------------")
+    try {
+      val otherKubernetesResources = resolvedDriverSpec.driverKubernetesResources ++ Seq(configMap)
+      addDriverOwnerReference(createdDriverPod, otherKubernetesResources)
+      kubernetesClient.resourceList(otherKubernetesResources: _*).createOrReplace()
+
+      logInfo("---------------- DEBUG created other resources -----------------")
+    } catch {
+      case NonFatal(e) =>
+        kubernetesClient.pods().delete(createdDriverPod)
+        logInfo("---------------- DEBUG failed here -----------------")
+        throw e
+    }
+    val sId = Seq(kubernetesConf.namespace(), driverPodName).mkString(":")
+    logInfo("---------------- DEBUG sId" + sId + " -----------------")
+    breakable {
+      while (true) {
+        try {
+            logInfo("---------------- DEBUG pre-watch here -----------------")
+            watch = kubernetesClient
+              .pods()
+              .withName(driverPodName)
+              .watch(watcher)
+              logInfo("---------------- DEBUG pre-watch-stop here -----------------")
+            watcher.watchOrStop(sId)
+                break
+        } catch {
+          case e: KubernetesClientException if e.getCode == HTTP_GONE =>
+            logInfo("Resource version changed rerunning the watcher")
+        }
       }
     }
   }
