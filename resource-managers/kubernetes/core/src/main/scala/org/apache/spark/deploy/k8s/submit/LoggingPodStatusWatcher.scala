@@ -31,7 +31,7 @@ import org.apache.spark.util.ThreadUtils
 
 
 private[k8s] trait LoggingPodStatusWatcher extends Watcher[Pod] {
-  def awaitCompletion(): Unit
+  def reset(): Unit
   def watchOrStop(sId: String): Boolean
 }
 
@@ -83,12 +83,17 @@ private[k8s] class LoggingPodStatusWatcherImpl(
     }
   }
 
+  override def reset(): Unit = {
+    resourceTooOldReceived = false
+  }
+
   override def onClose(e: KubernetesClientException): Unit = {
     logInfo(s"Stopping watching application $appId with last-observed phase $phase")
     if (e != null && e.getCode==HTTP_GONE) {
       resourceTooOldReceived = true
       logInfo(s"Got HTTP Gone code, resource version changed in k8s api: $e")
     } else {
+      logInfo(s"Got proper termination code, closing watcher.")
       closeWatch()
     }
   }
@@ -146,13 +151,6 @@ private[k8s] class LoggingPodStatusWatcherImpl(
     }.mkString("")
   }
 
-  override def awaitCompletion(): Unit = {
-    podCompletedFuture.await()
-    logInfo(pod.map { p =>
-      s"Container final statuses:\n\n${containersDescription(p)}"
-    }.getOrElse("No containers were found in the driver pod."))
-  }
-
   private def containersDescription(p: Pod): String = {
     p.getStatus.getContainerStatuses.asScala.map { status =>
       Seq(
@@ -191,12 +189,14 @@ private[k8s] class LoggingPodStatusWatcherImpl(
   }
 
   override def watchOrStop(sId: String): Boolean = if (waitForCompletion) {
-    logInfo(s"Waiting for application ${appId} with submission ID $sId to finish...")
+    logInfo(s"Patched Sept 8th: Waiting for application" +
+      s" ${appId} with submission ID $sId to finish...")
     val interval = maybeLoggingInterval
+
     synchronized {
       while (!podCompleted && !resourceTooOldReceived) {
         wait(interval.get)
-        logInfo(s"Application status for $appId (phase: $phase)")
+        logDebug(s"Application status for $appId (phase: $phase)")
       }
     }
 
@@ -205,7 +205,12 @@ private[k8s] class LoggingPodStatusWatcherImpl(
         pod.map { p => s"Container final statuses:\n\n${containersDescription(p)}" }
           .getOrElse("No containers were found in the driver pod."))
       logInfo(s"Application ${appId} with submission ID $sId finished")
+    } else {
+      logInfo(s"Got HTTP Gone code, resource version changed in k8s api. Creating a new watcher.")
     }
+
+    logInfo(s"Watcher has stopped, pod completed status: ${podCompleted}")
+
     podCompleted
   } else {
     logInfo(s"Deployed Spark application ${appId} with submission ID $sId into Kubernetes")

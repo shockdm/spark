@@ -23,6 +23,7 @@ import java.util.Properties
 
 import io.fabric8.kubernetes.api.model._
 import io.fabric8.kubernetes.client.{KubernetesClient, KubernetesClientException, Watch}
+import io.fabric8.kubernetes.client.Watcher.Action
 import scala.collection.mutable
 import scala.util.control.NonFatal
 import util.control.Breaks._
@@ -151,16 +152,20 @@ private[spark] class Client(
     val sId = Seq(kubernetesConf.namespace(), driverPodName).mkString(":")
     breakable {
       while (true) {
-        try {
-            watch = kubernetesClient
-              .pods()
-              .withName(driverPodName)
-              .watch(watcher)
-            watcher.watchOrStop(sId)
-                break
-        } catch {
-          case e: KubernetesClientException if e.getCode == HTTP_GONE =>
-            logInfo("Resource version changed rerunning the watcher")
+        val podWithName = kubernetesClient
+          .pods()
+          .withName(driverPodName)
+
+        watcher.reset()
+
+        watch = podWithName.watch(watcher)
+
+        watcher.eventReceived(Action.MODIFIED, podWithName.get())
+
+        if(watcher.watchOrStop(sId)) {
+          logInfo(s"Stop watching as the pod has completed.")
+          watch.close()
+          break
         }
       }
     }
